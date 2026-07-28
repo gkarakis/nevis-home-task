@@ -23,7 +23,8 @@ public class LlmConfig {
 
     private static final Logger log = LoggerFactory.getLogger(LlmConfig.class);
 
-    private AnthropicClient sharedClient;
+    private AnthropicClient summaryClient;
+    private AnthropicClient queryParserClient;
 
     @Bean
     public Summarizer summarizer(LlmProperties props) {
@@ -33,7 +34,7 @@ public class LlmConfig {
             return extractive;
         }
         log.info("LLM summariser ENABLED (model={}).", props.model());
-        return new AnthropicSummarizer(client(props), props, extractive);
+        return new AnthropicSummarizer(summaryClient(props), props, extractive);
     }
 
     @Bean
@@ -42,18 +43,28 @@ public class LlmConfig {
             log.info("LLM query parsing DISABLED — queries are searched literally.");
             return new NoOpQueryParser();
         }
-        log.info("LLM query parsing ENABLED (model={}).", props.model());
-        return new AnthropicQueryParser(client(props), props);
+        log.info("LLM query parsing ENABLED (model={}, timeoutMs={}).",
+                props.model(), props.queryTimeoutMs());
+        return new AnthropicQueryParser(queryParserClient(props), props);
     }
 
-    /** One shared client for every LLM feature, built lazily only when a feature is active. */
-    private AnthropicClient client(LlmProperties props) {
-        if (sharedClient == null) {
-            sharedClient = AnthropicOkHttpClient.builder()
+    private AnthropicClient summaryClient(LlmProperties props) {
+        if (summaryClient == null) {
+            summaryClient = AnthropicOkHttpClient.builder()
                     .apiKey(props.apiKey())
                     .timeout(Duration.ofMillis(props.timeoutMs()))
                     .build();
         }
-        return sharedClient;
+        return summaryClient;
+    }
+
+    private AnthropicClient queryParserClient(LlmProperties props) {
+        if (queryParserClient == null) {
+            queryParserClient = AnthropicOkHttpClient.builder()
+                    .apiKey(props.apiKey())
+                    .timeout(Duration.ofMillis(props.queryTimeoutMs()))
+                    .build();
+        }
+        return queryParserClient;
     }
 }

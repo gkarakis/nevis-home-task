@@ -14,12 +14,14 @@ public record LlmProperties(
         String apiKey,
         String model,
         long timeoutMs,
+        long queryTimeoutMs,
         int maxSummaryChars,
         boolean parseQueries
 ) {
     public LlmProperties {
         if (model == null || model.isBlank()) model = "claude-opus-4-8";
         if (timeoutMs <= 0) timeoutMs = 20_000;
+        if (queryTimeoutMs <= 0) queryTimeoutMs = 2_000;
         if (maxSummaryChars <= 0) maxSummaryChars = 160;
     }
 

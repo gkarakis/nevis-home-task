@@ -16,6 +16,7 @@ import org.slf4j.LoggerFactory;
 public class AnthropicSummarizer implements Summarizer {
 
     private static final Logger log = LoggerFactory.getLogger(AnthropicSummarizer.class);
+    private static final int MAX_PROMPT_CONTENT_CHARS = 12_000;
 
     private final AnthropicClient client;
     private final LlmProperties props;
@@ -55,6 +56,17 @@ public class AnthropicSummarizer implements Summarizer {
     private static String prompt(String title, String content) {
         return "Summarise the following client document in one or two plain sentences. "
                 + "Return only the summary, with no preamble or leading label.\n\n"
-                + "Title: " + title + "\n\nContent:\n" + content;
+                + "Title: " + title + "\n\nContent:\n" + promptContent(content);
+    }
+
+    private static String promptContent(String content) {
+        if (content == null) {
+            return "";
+        }
+        String stripped = content.strip();
+        if (stripped.length() <= MAX_PROMPT_CONTENT_CHARS) {
+            return stripped;
+        }
+        return stripped.substring(0, MAX_PROMPT_CONTENT_CHARS).stripTrailing();
     }
 }

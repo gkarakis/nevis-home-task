@@ -17,7 +17,6 @@ import com.nevis.search.search.dto.Channel;
 import com.nevis.search.search.dto.SearchHit;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -43,7 +42,6 @@ public class SearchService {
     private final LlmProperties llmProps;
     private final QueryParser queryParser;
 
-    @Transactional(readOnly = true)
     public List<SearchHit> search(String rawQuery, Integer requestedLimit) {
         // Validate after normalising. A query of "---" passes @NotBlank but
         // normalises to empty, at which point search_blob LIKE '%%' matches every
@@ -120,9 +118,10 @@ public class SearchService {
         List<SearchHit> directClients = new ArrayList<>();
         List<SearchHit> fuzzyClients = new ArrayList<>();
         for (ClientCandidate c : clients) {
+            double score = c.directMatch() ? 1.0 : c.score();
             SearchHit hit = SearchHit.client(
                     c.id(),
-                    round(c.score()),
+                    round(score),
                     List.of(c.directMatch() ? Channel.DIRECT : Channel.FUZZY),
                     new SearchHit.ClientRef(c.id(), c.firstName(), c.lastName(),
                             c.email(), c.description()));

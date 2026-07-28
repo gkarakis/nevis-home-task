@@ -46,20 +46,33 @@ public class SearchQueryRepository {
         // substring is a weak (fuzzy-tier) hit, not a tier-1 identity match. Retrieval
         // still uses the indexed search_blob, so description matches are found; they
         // just carry direct_match = false and sort below documents.
+        //
+        // Fuzzy retrieval uses the pg_trgm % operator, not similarity(...) >= x, so
+        // PostgreSQL can use idx_clients_blob_trgm. set_config is statement-local here;
+        // the threshold feeds the operator without leaking to later pooled-connection use.
         String sql = """
+                WITH threshold AS (
+                    SELECT set_config('pg_trgm.similarity_threshold', :clientFloorText, true)
+                ),
+                candidates AS (
+                    SELECT c.id, c.first_name, c.last_name, c.email, c.description,
+                           (search_normalize(c.first_name || ' ' || c.last_name || ' ' || c.email)
+                                LIKE '%' || :qnorm || '%') AS direct_match,
+                           similarity(c.search_blob, :qnorm) AS fuzzy_score
+                    FROM clients c, threshold
+                    WHERE c.search_blob LIKE '%' || :qnorm || '%'
+                       OR c.search_blob % :qnorm
+                )
                 SELECT id, first_name, last_name, email, description,
-                       (search_normalize(first_name || ' ' || last_name || ' ' || email)
-                            LIKE '%' || :qnorm || '%')  AS direct_match,
-                       similarity(search_blob, :qnorm)  AS score
-                FROM clients
-                WHERE search_blob LIKE '%' || :qnorm || '%'
-                   OR similarity(search_blob, :qnorm) >= :clientFloor
+                       direct_match,
+                       CASE WHEN direct_match THEN 1.0 ELSE fuzzy_score END AS score
+                FROM candidates
                 ORDER BY direct_match DESC, score DESC, id
                 LIMIT :depth
                 """;
         MapSqlParameterSource params = new MapSqlParameterSource()
                 .addValue("qnorm", qnorm)
-                .addValue("clientFloor", clientFloor)
+                .addValue("clientFloorText", Double.toString(clientFloor))
                 .addValue("depth", depth);
         return jdbc.query(sql, params, CLIENT_MAPPER);
     }
@@ -100,6 +113,9 @@ public class SearchQueryRepository {
     public List<DocCandidate> searchLexical(String qnorm, String rawQuery, int depth,
                                             Collection<UUID> clientIds) {
         String scope = scoped(clientIds) ? " AND client_id IN (:clientIds) " : "";
+        // Identifier-like queries are intentionally absolute: any digit-bearing
+        // substring hit sorts ahead of full-text rank because account/reference lookup
+        // precision matters more than prose relevance for those searches.
         String sql = """
                 SELECT id, client_id, title,
                        ts_rank_cd(search_tsv, websearch_to_tsquery('english', :q)) AS score

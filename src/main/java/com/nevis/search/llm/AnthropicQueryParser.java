@@ -50,7 +50,7 @@ public class AnthropicQueryParser implements QueryParser {
                     .addUserMessage(prompt(rawQuery.strip()))
                     .build();
             return fromJson(rawQuery, text(client.messages().create(params)));
-        } catch (RuntimeException e) {
+        } catch (Exception e) {
             log.warn("LLM query parse failed ({}); using the query as-is", e.toString());
             return ParsedQuery.plain(rawQuery);
         }

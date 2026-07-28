@@ -68,5 +68,6 @@ nevis:
     api-key: ${ANTHROPIC_API_KEY:}   # empty string when the env var is absent
     model: claude-opus-4-8
     timeout-ms: 20000
+    query-timeout-ms: 2000           # read-path parser budget; falls back safely
     max-summary-chars: 160           # length of the extractive fallback summary
     parse-queries: true              # split "concept of client" queries (read path; needs a key)
