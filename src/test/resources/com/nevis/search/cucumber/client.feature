@@ -38,6 +38,15 @@ Feature: Client registry
     Then the response status should be 400
     And the response field "code" should be "VALIDATION_FAILED"
 
+  Scenario: Reject a non-http social link
+    When I create a client with:
+      """
+      { "first_name": "Ada", "last_name": "Lovelace", "email": "ada.lovelace@example.com",
+        "social_links": ["ftp://example.com/profile"] }
+      """
+    Then the response status should be 400
+    And the response field "code" should be "VALIDATION_FAILED"
+
   Scenario: List clients includes the seeded demo data
     When I list all clients
     Then the response status should be 200
