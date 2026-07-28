@@ -1,0 +1,61 @@
+spring:
+  application:
+    name: nevis-search
+
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/nevis}
+    username: ${SPRING_DATASOURCE_USERNAME:nevis}
+    password: ${SPRING_DATASOURCE_PASSWORD:nevis}
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      # Flyway owns the schema (including the vector column and generated columns,
+      # which Hibernate cannot model). Never let Hibernate touch DDL.
+      ddl-auto: none
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    default-property-inclusion: non_null
+
+  ai:
+    embedding:
+      transformer:
+        # Left blank for local dev: Spring AI falls back to its bundled default
+        # artifacts. In Docker these point at the model baked in at build time:
+        #   onnx.model-uri: file:/opt/model/model.onnx
+        #   tokenizer.uri:  file:/opt/model/tokenizer.json
+        onnx:
+          model-uri: ${SPRING_AI_EMBEDDING_TRANSFORMER_ONNX_MODEL_URI:}
+        tokenizer:
+          uri: ${SPRING_AI_EMBEDDING_TRANSFORMER_TOKENIZER_URI:}
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+nevis:
+  search:
+    limit-default: 20
+    limit-max: 100
+    channel-depth: 50      # rows per query before fusion
+    rrf-k: 60
+    semantic-floor: 0.20   # cosine similarity — model-specific, tuned empirically:
+                           #   "address proof" keeps the utility bill (~0.24) while
+                           #   the portfolio note (~0.06) and off-topic queries are
+                           #   dropped. Re-tune for a different embedding model.
+    client-floor: 0.30     # trigram similarity

@@ -1,0 +1,31 @@
+services:
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: nevis
+      POSTGRES_USER: nevis
+      POSTGRES_PASSWORD: nevis
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nevis -d nevis"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  app:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy      # not just service_started
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/nevis
+      SPRING_DATASOURCE_USERNAME: nevis
+      SPRING_DATASOURCE_PASSWORD: nevis
+      SPRING_PROFILES_ACTIVE: demo      # loads seed data
+    ports: ["8080:8080"]
+
+volumes:
+  pgdata:
