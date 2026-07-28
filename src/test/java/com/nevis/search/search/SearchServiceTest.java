@@ -10,6 +10,7 @@ import com.nevis.search.embedding.EmbeddingService;
 import com.nevis.search.llm.LlmProperties;
 import com.nevis.search.llm.ParsedQuery;
 import com.nevis.search.llm.QueryParser;
+import com.nevis.search.search.dto.SearchHit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -48,7 +49,7 @@ class SearchServiceTest {
 
     private final SearchNormalizer normalizer = new SearchNormalizer();
     private final SearchProperties props = new SearchProperties(20, 100, 50, 60, 0.2, 0.3);
-    private final LlmProperties llmProps = new LlmProperties(true, "k", null, 0, 0, true);
+    private final LlmProperties llmProps = new LlmProperties(true, "k", null, 0, 0, 0, true);
 
     private SearchService service;
 
@@ -143,5 +144,26 @@ class SearchServiceTest {
                 .isInstanceOf(BadRequestException.class);
 
         verifyNoInteractions(queryParser, embeddingService, queryRepository);
+    }
+
+    @Test
+    void directClientHitsReportPerfectScore() {
+        UUID johnId = UUID.randomUUID();
+        when(queryParser.parse("John")).thenReturn(ParsedQuery.plain("John"));
+        when(embeddingService.embed("John")).thenReturn(new float[] {0.1f});
+        when(queryRepository.searchClients(eq("john"), anyDouble(), anyInt()))
+                .thenReturn(List.of(new ClientCandidate(
+                        johnId, "John", "Doe", "john@x.com", null, true, 0.15)));
+        when(queryRepository.searchSemantic(anyString(), anyDouble(), anyInt(), isNull()))
+                .thenReturn(List.of());
+        when(queryRepository.searchLexical(anyString(), anyString(), anyInt(), isNull()))
+                .thenReturn(List.of());
+        when(clientRepository.findAllById(any())).thenReturn(List.of());
+        when(documentRepository.findAllById(any())).thenReturn(List.of());
+
+        List<SearchHit> hits = service.search("John", null);
+
+        assertThat(hits).hasSize(1);
+        assertThat(hits.getFirst().score()).isEqualTo(1.0);
     }
 }

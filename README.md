@@ -41,10 +41,6 @@ curl 'http://localhost:8080/search?q=address+proof'
 curl 'http://localhost:8080/search?q=elephant+breeding+habits'
 ```
 
-> If host port 5432 is already in use, publish Postgres elsewhere, e.g.
-> `docker compose run` with an override mapping `"5433:5432"`. The app reaches
-> Postgres over the compose network regardless of the host mapping.
-
 ### Running without Docker
 
 ```bash
@@ -440,7 +436,7 @@ Two optional features use a hosted Claude model: a **document summary** (§8.1) 
 per feature, decided once at startup, logged so you can see the live mode. The same
 build runs both ways, so **a clean clone works with no key and no egress**; add a key to
 turn the LLM on. Config lives under `nevis.llm.*` (`model`, `timeout-ms`,
-`max-summary-chars`, `parse-queries`).
+`query-timeout-ms`, `max-summary-chars`, `parse-queries`).
 
 Set `ANTHROPIC_API_KEY` in the app's environment (empty by default). Under Docker,
 `docker-compose.yml` forwards the host's value to the app container, so the key rides an

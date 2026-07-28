@@ -14,7 +14,7 @@ class LlmConfigTest {
     private final LlmConfig config = new LlmConfig();
 
     private static LlmProperties props(boolean enabled, String apiKey, boolean parseQueries) {
-        return new LlmProperties(enabled, apiKey, null, 0, 0, parseQueries);
+        return new LlmProperties(enabled, apiKey, null, 0, 0, 0, parseQueries);
     }
 
     @Test
