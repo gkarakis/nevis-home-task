@@ -16,9 +16,8 @@ import static io.cucumber.junit.platform.engine.Constants.PLUGIN_PROPERTY_NAME;
  *
  * <p>Requires Docker and the embedding model — see {@link com.nevis.search.cucumber.CucumberSpringConfiguration}.
  * The JUnit Platform Suite engine does not evaluate Jupiter conditions such as
- * {@code @DisabledOnOs}, so the macOS-Intel skip that {@code SearchIntegrationTest}
- * gets from that annotation is applied here by an OS-activated Maven profile that
- * excludes this runner from Failsafe (see {@code pom.xml}).
+ * {@code @DisabledOnOs}, so the macOS-Intel skip is applied by an OS-activated Maven
+ * profile that excludes this runner from Failsafe (see {@code pom.xml}).
  */
 @Suite
 @IncludeEngines("cucumber")

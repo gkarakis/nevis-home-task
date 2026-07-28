@@ -56,44 +56,209 @@ curl 'http://localhost:8080/search?q=elephant+breeding+habits'
 
 ## 2. API
 
-Request/response bodies use `snake_case`. Every error uses one shape:
+Base URL `http://localhost:8080`. All request and response bodies are JSON in
+`snake_case`; timestamps are RFC 3339 in UTC. **Null fields are omitted** from
+responses (`default-property-inclusion: non_null`), so an absent `description` or a
+document owner's `email` simply does not appear on the wire.
+
+| Method & path | Purpose | Success |
+|---|---|---|
+| `POST /clients` | Create a client | `201` + `Location` |
+| `GET /clients` | List all clients | `200` |
+| `POST /clients/{clientId}/documents` | Add a document to a client | `201` + `Location` |
+| `GET /search` | Search clients + documents as one ranked list | `200` |
+
+### 2.0 Error shape
+
+Every 4xx/5xx uses **one shape**. `details` lists per-field violations on validation
+failures and is `[]` otherwise:
 
 ```json
-{ "code": "CLIENT_NOT_FOUND", "message": "Client 4df7… does not exist",
-  "timestamp": "2026-07-23T09:14:22Z", "details": [] }
+{
+  "code": "VALIDATION_FAILED",
+  "message": "Request validation failed",
+  "timestamp": "2026-07-23T09:14:22Z",
+  "details": [
+    { "field": "email", "message": "must be a well-formed email address" }
+  ]
+}
 ```
 
-| Endpoint | Status codes |
-|---|---|
-| `POST /clients` | `201` (+ `Location`) · `400` validation · `409` duplicate email |
-| `GET /clients` | `200` |
-| `POST /clients/{id}/documents` | `201` (+ `Location`) · `400` · `404` unknown client · `503` embedding unavailable |
-| `GET /search?q=&limit=` | `200` (empty array when nothing clears the floors) · `400` when `q` is missing, blank, or empty after normalisation |
+| `code` | HTTP | Raised when |
+|---|---|---|
+| `VALIDATION_FAILED` | `400` | A request body fails bean validation (`details` names the fields) |
+| `INVALID_QUERY` | `400` | `q` is missing, or empty/too short after normalisation |
+| `CLIENT_NOT_FOUND` | `404` | `clientId` does not exist |
+| `EMAIL_ALREADY_EXISTS` | `409` | Another client already uses that email (unique on `lower(email)`) |
+| `EMBEDDING_UNAVAILABLE` | `503` | The embedding model failed; **nothing was written** |
 
-`limit` defaults to `20` and is clamped to `100` (an over-large value is clamped,
-not rejected). A search response is a **top-level JSON array** — no envelope. Each
-element is a discriminated union on `type`:
+---
+
+### 2.1 `POST /clients` — create a client
+
+**Request body**
+
+| Field | Type | Required | Constraints |
+|---|---|---|---|
+| `first_name` | string | yes | non-blank, ≤ 255 |
+| `last_name` | string | yes | non-blank, ≤ 255 |
+| `email` | string | yes | non-blank, valid email, ≤ 320, unique (case-insensitive) |
+| `description` | string | no | ≤ 5000 |
+| `social_links` | string[] | no | each must be an `http(s)://…` URL |
+
+```bash
+curl -X POST http://localhost:8080/clients \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "first_name": "John",
+    "last_name": "Doe",
+    "email": "john.doe@neviswealth.com",
+    "description": "Long-standing wealth client",
+    "social_links": ["https://linkedin.com/in/johndoe"]
+  }'
+```
+
+**`201 Created`** — `Location: /clients/{id}`. Body:
+
+```json
+{
+  "id": "4df7a1e0-1c2b-4f3a-9a11-8b7c6d5e4f30",
+  "first_name": "John",
+  "last_name": "Doe",
+  "email": "john.doe@neviswealth.com",
+  "description": "Long-standing wealth client",
+  "social_links": ["https://linkedin.com/in/johndoe"],
+  "created_at": "2026-01-14T10:02:11Z"
+}
+```
+
+**Errors:** `400 VALIDATION_FAILED` · `409 EMAIL_ALREADY_EXISTS`.
+
+---
+
+### 2.2 `GET /clients` — list clients
+
+No parameters. **`200 OK`** — a top-level JSON **array** of the object shown in §2.1
+(empty array when there are no clients).
+
+```bash
+curl http://localhost:8080/clients
+```
+
+---
+
+### 2.3 `POST /clients/{clientId}/documents` — add a document
+
+**Path parameter:** `clientId` (UUID of an existing client).
+
+**Request body**
+
+| Field | Type | Required | Constraints |
+|---|---|---|---|
+| `title` | string | yes | non-blank, ≤ 500 |
+| `content` | string | yes | non-blank, ≤ 50 000 — **pre-extracted plain text** (no file upload) |
+
+```bash
+curl -X POST http://localhost:8080/clients/4df7a1e0-1c2b-4f3a-9a11-8b7c6d5e4f30/documents \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "title": "John'\''s utility bill",
+    "content": "Electricity bill for 123 Main Street dated 14 Jan 2026, account ACC-889134…"
+  }'
+```
+
+**`201 Created`** — `Location: /clients/{clientId}/documents/{id}`. Body:
+
+```json
+{
+  "id": "9c1f2b3a-4d5e-6f70-8192-a3b4c5d6e7f8",
+  "client_id": "4df7a1e0-1c2b-4f3a-9a11-8b7c6d5e4f30",
+  "title": "John's utility bill",
+  "chunk_count": 1,
+  "created_at": "2026-01-14T10:02:11Z"
+}
+```
+
+`chunk_count` is how many ~800-char chunks the content was split into and embedded
+(see §4). Embedding happens **before** the write transaction, so a `201` guarantees
+every chunk is embedded and immediately searchable.
+
+**Errors:** `400 VALIDATION_FAILED` · `404 CLIENT_NOT_FOUND` · `503 EMBEDDING_UNAVAILABLE`.
+
+---
+
+### 2.4 `GET /search` — search clients and documents
+
+**Query parameters**
+
+| Param | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `q` | string | yes | — | The search text. Normalised (lowercase, accent-fold, strip non-alphanumerics) before matching. |
+| `limit` | integer | no | `20` | Max results. Clamped to `[1, 100]` — an over-large value is **clamped, not rejected**. |
+
+```bash
+curl 'http://localhost:8080/search?q=address+proof&limit=20'
+```
+
+**`200 OK`** — a **top-level JSON array** (no envelope), empty `[]` when nothing
+clears the relevance floors. Each element is a discriminated union on `type`:
+
+| Field | Type | Present for | Meaning |
+|---|---|---|---|
+| `type` | `CLIENT` \| `DOCUMENT` | all | Which kind of hit this is |
+| `id` | UUID | all | Client id or document id |
+| `score` | number | all | Relevance **within its own type** (cosine sim. for documents, trigram sim. for clients) — see note below |
+| `matched_by` | Channel[] | all | Any of `SEMANTIC`, `LEXICAL` (documents) or `DIRECT`, `FUZZY` (clients) |
+| `client` | object | all | The client — for a `DOCUMENT` it is the owner, with `email`/`description` omitted |
+| `client.id / first_name / last_name` | UUID / string / string | all | — |
+| `client.email / description` | string | `CLIENT` hits only | Omitted (null) on document owners |
+| `document` | object | `DOCUMENT` only | The matched document |
+| `document.id / title / created_at` | UUID / string / timestamp | `DOCUMENT` | — |
+| `document.snippet` | string | `DOCUMENT` | **Quick summary of the document** — a whitespace-collapsed leading slice of the content (≤ 160 chars, ellipsised) |
+
+Example — a document matched by **both** channels (RRF), followed by a directly
+matched client:
 
 ```json
 [
   {
     "type": "DOCUMENT",
-    "id": "9c1f…",
+    "id": "9c1f2b3a-4d5e-6f70-8192-a3b4c5d6e7f8",
     "score": 0.71,
     "matched_by": ["SEMANTIC", "LEXICAL"],
-    "client": { "id": "4df7…", "first_name": "John", "last_name": "Doe" },
+    "client": {
+      "id": "4df7a1e0-1c2b-4f3a-9a11-8b7c6d5e4f30",
+      "first_name": "John",
+      "last_name": "Doe"
+    },
     "document": {
-      "id": "9c1f…", "title": "John's utility bill",
-      "snippet": "Electricity bill for 123 Main Street dated…",
+      "id": "9c1f2b3a-4d5e-6f70-8192-a3b4c5d6e7f8",
+      "title": "John's utility bill",
+      "snippet": "Electricity bill for 123 Main Street dated 14 Jan 2026, account ACC-889134…",
       "created_at": "2026-01-14T10:02:11Z"
+    }
+  },
+  {
+    "type": "CLIENT",
+    "id": "4df7a1e0-1c2b-4f3a-9a11-8b7c6d5e4f30",
+    "score": 0.83,
+    "matched_by": ["DIRECT"],
+    "client": {
+      "id": "4df7a1e0-1c2b-4f3a-9a11-8b7c6d5e4f30",
+      "first_name": "John",
+      "last_name": "Doe",
+      "email": "john.doe@neviswealth.com",
+      "description": "Long-standing wealth client"
     }
   }
 ]
 ```
 
-`score` is relevance **within a result's own type** (cosine similarity for
-documents, trigram similarity for clients). Because array order follows the tier
-rule below, scores are **not** globally monotonic.
+`score` is relevance **within a result's own type**. Because array order follows the
+tier rule in §3 (not a global score), scores are **not** globally monotonic.
+
+**Errors:** `400 INVALID_QUERY` when `q` is missing or normalises to fewer than two
+characters.
 
 ---
 
@@ -256,20 +421,70 @@ implementation is built against.
   dimension migration + full re-index + floor re-tuning) — are future work.
 - **Floors are tuned to this model** and would need re-tuning for another.
 - **Cross-type order is a product rule**, not a computed ranking (by design, §3).
-- **Snippet** is a leading slice of content, not a match-highlighted `ts_headline`.
+- **Summary is extractive, not abstractive.** `document.snippet` is a leading slice
+  of content (see §8), not an LLM-written summary. This satisfies the brief's
+  *optional* "quick summary of document content" cheaply; a real summary is §8.
 
 ---
 
-## 8. Production considerations
+## 8. Document summary (the "optional quick summary")
+
+The brief lists an **optional** *"quick summary of document content"*. It is served
+today by `document.snippet` in the search response (§2.4): a whitespace-collapsed
+leading slice of the content, ≤ 160 chars. That is honest to call a summary only in
+the weakest sense — it is **extractive by position** and does not understand the
+document. A genuine summary needs an LLM. We shipped the slice and did **not** build
+the LLM path; the reasons and the intended shape are below.
+
+### Proposed solution (not built)
+
+One seam, generation once at create time, an LLM behind it:
+
+1. **Schema** — add a nullable `documents.summary TEXT` column (new migration).
+2. **Interface** — `Summarizer { String summarize(String title, String content); }`,
+   mirroring the single-implementation `EmbeddingService`. Two implementations: an
+   **LLM** one (the real summary) and a **leading-text** one (extractive fallback for
+   deployments with no model configured).
+3. **Write path** — call the summarizer in `DocumentService.create()`, in the same
+   pre-transaction block that already embeds, so no pooled DB connection is held
+   across inference. `DocumentWriter.save(...)` persists `summary` atomically with the
+   row — the same invariant the embeddings get (*document exists ⇒ summary present*).
+4. **Read path** — `SearchService` returns the stored `summary`; **summarization never
+   runs during search.** The `snippet` field is renamed `summary`; its wire shape is
+   unchanged, so no client breaks.
+
+The value of this seam is *not* better summaries on its own — leading-text stored at
+write time is the same quality tier as the leading-slice computed at query time. Its
+value is that swapping the extractive impl for the LLM impl is then a **one-class
+change with no API change**.
+
+### Why Option C (the LLM) was not implemented
+
+- **It breaks the repo's stated no-egress guarantee.** §4 makes local, in-process
+  inference a design principle precisely because these are **financial documents** —
+  *"client documents never leave the deployment."* A hosted LLM (e.g. Claude) sends
+  document content off-box and requires the DPA / data-residency / retention review
+  flagged below — a compliance decision, not a code change, and not ours to make for
+  Nevis in a take-home.
+- **A local generative model preserves egress but is disproportionate here.** It keeps
+  data on-box but adds a much larger image, meaningful per-document latency, and infra
+  weight — a heavy dependency for an *optional* field on a small dataset, and a
+  weaker summary than a hosted model would give.
+- **The requirement is explicitly optional**, so the right call was to satisfy the
+  field cheaply and deterministically (zero new dependencies, no external calls) and
+  leave the seam for whichever summarizer Nevis's privacy posture allows — rather than
+  bake a provider and its data-flow implications into the submission.
+
+---
+
+## 9. Production considerations
 
 - **Tenant scoping** enforced at the data-access layer.
 - **Async indexing**: persist documents `PENDING` and index out-of-band with retries
   and a dead-letter queue, instead of synchronous embedding.
 - **HNSW index** on `document_chunks.embedding` when volume requires it.
 - **DPA, data residency and retention** review before adopting any external
-  embedding provider.
-- **Stretch (not built):** a document summary generated once at creation and stored,
-  never during search.
+  embedding **or summarization** provider (see §8).
 
 ---
 
@@ -286,10 +501,11 @@ determinism), `SearchNormalizer` (shared fixtures), `TextChunker`, `DocumentServ
 (unknown client throws before any embedding call; embedding failure persists
 nothing), and `ClientController` (201/400/409 via MockMvc).
 
-The integration suite (`SearchIntegrationTest`, tagged `integration`) runs Flyway
-against a real `pgvector/pgvector:pg16` container — so the migrations, the
-`IMMUTABLE` function and the generated columns are under test — and asserts the
-golden cases against the seed data using the **real** embedding model:
+The Cucumber integration suite (`CucumberIntegrationTest`, with scenarios tagged
+`integration`) runs Flyway against a real `pgvector/pgvector:pg16` container — so
+the migrations, the `IMMUTABLE` function and the generated columns are under test
+— and asserts the golden cases against the seed data using the **real** embedding
+model:
 
 | Query | Expected |
 |---|---|

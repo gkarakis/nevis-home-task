@@ -12,9 +12,8 @@ import org.testcontainers.utility.DockerImageName;
 /**
  * The single Spring context shared by every Cucumber scenario. Boots the full app on
  * a random port against a real Postgres (pgvector) container and the real embedding
- * model — the same footprint as {@code SearchIntegrationTest} — so the feature files
- * exercise the application end to end. The {@code demo} profile seeds the fixture
- * clients and documents the search scenarios rely on.
+ * model, so the feature files exercise the application end to end. The {@code demo}
+ * profile seeds the fixture clients and documents the search scenarios rely on.
  *
  * <p>Like the rest of the integration suite, this cannot run on macOS Intel (the DJL
  * tokenizer native library is unavailable there); run it on linux/amd64, in Docker,

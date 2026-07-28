@@ -227,10 +227,10 @@
 
   <profiles>
     <!-- The embedding model's DJL native library is unavailable on macOS Intel, so
-         the full-stack integration tests cannot boot there. SearchIntegrationTest
-         self-disables via @DisabledOnOs, but the JUnit Platform Suite engine ignores
-         that annotation, so the Cucumber runner is excluded from Failsafe here
-         instead. Run the integration suite on linux/amd64 (Docker/CI) or Apple Silicon. -->
+         the full-stack integration tests cannot boot there. The JUnit Platform Suite
+         engine ignores @DisabledOnOs, so the Cucumber runner is excluded from Failsafe
+         here instead. Run the integration suite on linux/amd64 (Docker/CI) or Apple
+         Silicon. -->
     <profile>
       <id>macos-intel-skip-cucumber</id>
       <activation>
