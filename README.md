@@ -356,13 +356,12 @@ integration test that calls the real SQL function.
   run in order on one thread, and reactive parallelism was considered and rejected.
   WebFlux over blocking JPA/JDBC is an anti-pattern — real non-blocking I/O needs
   R2DBC, and the embedding model is CPU-bound inference regardless — so it would buy
-  reactive's complexity with none of its throughput. Parallelising the queries is
-  also fenced off by design: the read runs in one `@Transactional` unit bound to a
-  single thread-unsafe connection, and the dominant cost is the embedding, not the
-  three indexed queries (and `searchSemantic` can't start until the vector exists
-  anyway). If latency ever mattered, the move would be to measure first, then overlap
-  the embedding with the two non-vector queries via separate read connections — not a
-  WebFlux rewrite.
+  reactive's complexity with none of its throughput. Parallelising the repository
+  calls would also need separate read connections and extra coordination, while the
+  dominant cost is the embedding, not the three indexed queries (and
+  `searchSemantic` can't start until the vector exists anyway). If latency ever
+  mattered, the move would be to measure first, then overlap the embedding with the
+  two non-vector queries via separate read connections — not a WebFlux rewrite.
 - **Native SQL for search.** The queries need `<=>`, `similarity()` and
   `ts_rank_cd`, none of which JPQL expresses; CRUD uses Spring Data JPA.
 - **No vector index.** An exact scan gives perfect recall and is fast at this scale.

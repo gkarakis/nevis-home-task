@@ -65,7 +65,7 @@ public class SearchQueryRepository {
                 )
                 SELECT id, first_name, last_name, email, description,
                        direct_match,
-                       CASE WHEN direct_match THEN 1.0 ELSE fuzzy_score END AS score
+                       fuzzy_score AS score
                 FROM candidates
                 ORDER BY direct_match DESC, score DESC, id
                 LIMIT :depth
