@@ -33,15 +33,21 @@ public class Document {
     @Column(nullable = false)
     private String content;
 
+    // Quick summary of content, generated once at creation (LLM when configured,
+    // extractive fallback otherwise) and stored — never recomputed during search.
+    @Column
+    private String summary;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
     // search_tsv and doc_blob are STORED generated columns, maintained by Postgres.
 
-    public Document(UUID clientId, String title, String content) {
+    public Document(UUID clientId, String title, String content, String summary) {
         this.clientId = clientId;
         this.title = title;
         this.content = content;
+        this.summary = summary;
     }
 
     @PrePersist

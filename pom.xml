@@ -104,6 +104,13 @@
       <version>2.6.0</version>
     </dependency>
 
+    <!-- Optional LLM summaries: active only when ANTHROPIC_API_KEY is set (see llm/). -->
+    <dependency>
+      <groupId>com.anthropic</groupId>
+      <artifactId>anthropic-java</artifactId>
+      <version>2.34.0</version>
+    </dependency>
+
     <!-- Boilerplate reduction -->
     <dependency>
       <groupId>org.projectlombok</groupId>

@@ -25,6 +25,9 @@ services:
       SPRING_DATASOURCE_USERNAME: nevis
       SPRING_DATASOURCE_PASSWORD: nevis
       SPRING_PROFILES_ACTIVE: demo      # loads seed data
+      # Passed through from the host when set; empty (LLM off) otherwise. Never
+      # baked into the image.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     ports: ["8080:8080"]
 
 volumes:

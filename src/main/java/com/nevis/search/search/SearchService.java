@@ -9,6 +9,8 @@ import com.nevis.search.document.Document;
 import com.nevis.search.document.DocumentRepository;
 import com.nevis.search.document.VectorLiterals;
 import com.nevis.search.embedding.EmbeddingService;
+import com.nevis.search.llm.LlmProperties;
+import com.nevis.search.llm.SummaryText;
 import com.nevis.search.search.dto.Channel;
 import com.nevis.search.search.dto.SearchHit;
 import lombok.RequiredArgsConstructor;
@@ -26,8 +28,6 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class SearchService {
 
-    private static final int SNIPPET_MAX_CHARS = 160;
-
     /** Shortest normalised query we treat as searchable; below this we reject the request. */
     private static final int MIN_SEARCHABLE_QUERY_LENGTH = 2;
 
@@ -37,6 +37,7 @@ public class SearchService {
     private final ClientRepository clientRepository;
     private final DocumentRepository documentRepository;
     private final SearchProperties props;
+    private final LlmProperties llmProps;
 
     @Transactional(readOnly = true)
     public List<SearchHit> search(String rawQuery, Integer requestedLimit) {
@@ -101,7 +102,8 @@ public class SearchService {
                     : new SearchHit.ClientRef(owner.getId(), owner.getFirstName(),
                             owner.getLastName(), null, null);
             SearchHit.DocumentRef docRef = new SearchHit.DocumentRef(
-                    doc.getId(), doc.getTitle(), snippet(doc.getContent()), doc.getCreatedAt());
+                    doc.getId(), doc.getTitle(), summary(doc, llmProps.maxSummaryChars()),
+                    doc.getCreatedAt());
             documents.add(SearchHit.document(f.documentId(), round(f.displayScore()),
                     f.matchedBy(), ownerRef, docRef));
         }
@@ -109,15 +111,14 @@ public class SearchService {
         return ResultOrdering.order(directClients, documents, fuzzyClients, limit);
     }
 
-    private static String snippet(String content) {
-        if (content == null) {
-            return "";
-        }
-        String collapsed = content.strip().replaceAll("\\s+", " ");
-        if (collapsed.length() <= SNIPPET_MAX_CHARS) {
-            return collapsed;
-        }
-        return collapsed.substring(0, SNIPPET_MAX_CHARS).stripTrailing() + "…";
+    /**
+     * Prefer the stored write-time summary. Rows created before the summary
+     * column existed may still be null, so preserve the previous snippet behavior.
+     */
+    static String summary(Document doc, int maxSummaryChars) {
+        return doc.getSummary() == null
+                ? SummaryText.fromContent(doc.getContent(), maxSummaryChars)
+                : SummaryText.clamp(doc.getSummary(), maxSummaryChars);
     }
 
     private static double round(double v) {

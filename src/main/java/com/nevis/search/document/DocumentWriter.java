@@ -30,9 +30,9 @@ public class DocumentWriter {
 
     @Transactional
     public DocumentResponse save(Client client, CreateDocumentRequest req,
-                                 List<EmbeddedChunk> chunks) {
+                                 List<EmbeddedChunk> chunks, String summary) {
         Document document = documentRepository.saveAndFlush(
-                new Document(client.getId(), req.title().strip(), req.content()));
+                new Document(client.getId(), req.title().strip(), req.content(), summary));
 
         UUID documentId = document.getId();
         // The embedding is passed as a pgvector literal and cast in SQL; Hibernate

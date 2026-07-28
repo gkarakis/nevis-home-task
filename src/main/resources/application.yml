@@ -59,3 +59,13 @@ nevis:
                            #   the portfolio note (~0.06) and off-topic queries are
                            #   dropped. Re-tune for a different embedding model.
     client-floor: 0.30     # trigram similarity
+
+  llm:
+    # The API key is the feature flag. With ANTHROPIC_API_KEY set, documents are
+    # summarised by a hosted model; unset, the app falls back to an extractive
+    # summary and makes no network calls. A clean clone runs with no key.
+    enabled: true
+    api-key: ${ANTHROPIC_API_KEY:}   # empty string when the env var is absent
+    model: claude-opus-4-8
+    timeout-ms: 20000
+    max-summary-chars: 160           # length of the extractive fallback summary

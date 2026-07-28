@@ -421,59 +421,65 @@ implementation is built against.
   dimension migration + full re-index + floor re-tuning) — are future work.
 - **Floors are tuned to this model** and would need re-tuning for another.
 - **Cross-type order is a product rule**, not a computed ranking (by design, §3).
-- **Summary is extractive, not abstractive.** `document.snippet` is a leading slice
-  of content (see §8), not an LLM-written summary. This satisfies the brief's
-  *optional* "quick summary of document content" cheaply; a real summary is §8.
+- **Summary is extractive by default** (a leading slice of content); an abstractive
+  LLM summary is available but **opt-in** behind `ANTHROPIC_API_KEY`, off by default to
+  preserve the no-egress guarantee — see §8.
 
 ---
 
 ## 8. Document summary (the "optional quick summary")
 
-The brief lists an **optional** *"quick summary of document content"*. It is served
-today by `document.snippet` in the search response (§2.4): a whitespace-collapsed
-leading slice of the content, ≤ 160 chars. That is honest to call a summary only in
-the weakest sense — it is **extractive by position** and does not understand the
-document. A genuine summary needs an LLM. We shipped the slice and did **not** build
-the LLM path; the reasons and the intended shape are below.
+The brief lists an **optional** *"quick summary of document content"*, served by
+`document.snippet` in the search response (§2.4). The summary is generated **once at
+creation and stored** (never recomputed during search) by a `Summarizer` with two
+implementations, chosen at startup:
 
-### Proposed solution (not built)
+| Mode | When | What you get |
+|---|---|---|
+| **LLM** | `ANTHROPIC_API_KEY` is set | An abstractive summary from a hosted Claude model (`claude-opus-4-8`) |
+| **Extractive** | no key (the default) | A whitespace-collapsed leading slice of the content (≤ 160 chars) — deterministic, no network |
 
-One seam, generation once at create time, an LLM behind it:
+**The API key is the feature flag.** `LlmConfig` inspects `nevis.llm.active()` (enabled
+*and* a non-blank key) and wires either `AnthropicSummarizer` or `ExtractiveSummarizer`.
+The same build runs both ways, so **a clean clone works with no key and no egress**;
+add a key to turn the LLM on. The chosen mode is logged at startup.
 
-1. **Schema** — add a nullable `documents.summary TEXT` column (new migration).
-2. **Interface** — `Summarizer { String summarize(String title, String content); }`,
-   mirroring the single-implementation `EmbeddingService`. Two implementations: an
-   **LLM** one (the real summary) and a **leading-text** one (extractive fallback for
-   deployments with no model configured).
-3. **Write path** — call the summarizer in `DocumentService.create()`, in the same
-   pre-transaction block that already embeds, so no pooled DB connection is held
-   across inference. `DocumentWriter.save(...)` persists `summary` atomically with the
-   row — the same invariant the embeddings get (*document exists ⇒ summary present*).
-4. **Read path** — `SearchService` returns the stored `summary`; **summarization never
-   runs during search.** The `snippet` field is renamed `summary`; its wire shape is
-   unchanged, so no client breaks.
+### Shape
 
-The value of this seam is *not* better summaries on its own — leading-text stored at
-write time is the same quality tier as the leading-slice computed at query time. Its
-value is that swapping the extractive impl for the LLM impl is then a **one-class
-change with no API change**.
+- **Schema** — `V3__document_summary.sql` adds a nullable `documents.summary TEXT`.
+- **Interface** — `Summarizer { String summarize(String title, String content); }`,
+  mirroring the single-implementation `EmbeddingService`.
+- **Write path** — `DocumentService.create()` summarises in the same pre-transaction
+  block that already embeds (no pooled DB connection held across inference);
+  `DocumentWriter.save(...)` persists `summary` atomically with the row.
+- **Read path** — `SearchService` returns the stored `summary` in the `snippet` field;
+  the wire shape is unchanged, so no client breaks whether the LLM is on or off.
+- **Failure is non-fatal.** Unlike embeddings (which `503`), a summary is optional, so
+  an LLM outage/timeout **falls back to the extractive summary** rather than failing the
+  write. Three states all behave: no key → extractive; key but API down → extractive;
+  key and API up → LLM.
 
-### Why Option C (the LLM) was not implemented
+### Enabling the LLM
 
-- **It breaks the repo's stated no-egress guarantee.** §4 makes local, in-process
-  inference a design principle precisely because these are **financial documents** —
-  *"client documents never leave the deployment."* A hosted LLM (e.g. Claude) sends
-  document content off-box and requires the DPA / data-residency / retention review
-  flagged below — a compliance decision, not a code change, and not ours to make for
-  Nevis in a take-home.
-- **A local generative model preserves egress but is disproportionate here.** It keeps
-  data on-box but adds a much larger image, meaningful per-document latency, and infra
-  weight — a heavy dependency for an *optional* field on a small dataset, and a
-  weaker summary than a hosted model would give.
-- **The requirement is explicitly optional**, so the right call was to satisfy the
-  field cheaply and deterministically (zero new dependencies, no external calls) and
-  leave the seam for whichever summarizer Nevis's privacy posture allows — rather than
-  bake a provider and its data-flow implications into the submission.
+Set `ANTHROPIC_API_KEY` in the app's environment (empty by default). Under Docker,
+`docker-compose.yml` forwards the host's value to the app container, so the key rides
+an env var and is never baked into the image:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... docker compose up --build   # LLM summaries on
+docker compose up --build                                # no key → extractive (default)
+```
+
+Without Docker:
+`ANTHROPIC_API_KEY=sk-ant-... ./mvnw spring-boot:run -Dspring-boot.run.profiles=demo`.
+
+### The trade-off this exposes (see §9)
+
+The LLM path sends **client financial-document content** to a hosted model, which is
+exactly why it is **opt-in, not default-on**: §4 makes local, no-egress inference a
+design principle for this data, and enabling the hosted summariser requires the DPA /
+data-residency / retention review flagged in §9 — a deployment decision, not a code
+change. The extractive default keeps the brief's zero-egress guarantee intact.
 
 ---
 
@@ -498,8 +504,10 @@ change with no API change**.
 Unit tests cover `DocumentRankFusion` (a doc in both lists outranks a higher-placed
 doc in one; stable ordering; empty lists), `ResultOrdering` (tier precedence, limit,
 determinism), `SearchNormalizer` (shared fixtures), `TextChunker`, `DocumentService`
-(unknown client throws before any embedding call; embedding failure persists
-nothing), and `ClientController` (201/400/409 via MockMvc).
+(unknown client throws before any embedding call; embedding failure persists nothing;
+the generated summary reaches the writer), `ClientController` (201/400/409 via
+MockMvc), and the summary feature flag — `LlmConfig` (key present ⇒ LLM impl, absent
+or disabled ⇒ extractive) and `ExtractiveSummarizer`.
 
 The Cucumber integration suite (`CucumberIntegrationTest`, with scenarios tagged
 `integration`) runs Flyway against a real `pgvector/pgvector:pg16` container — so

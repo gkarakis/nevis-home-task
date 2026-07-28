@@ -7,6 +7,7 @@ import com.nevis.search.document.dto.CreateDocumentRequest;
 import com.nevis.search.document.dto.DocumentResponse;
 import com.nevis.search.embedding.EmbeddingService;
 import com.nevis.search.embedding.TextChunker;
+import com.nevis.search.llm.Summarizer;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -20,6 +21,7 @@ public class DocumentService {
     private final ClientRepository clientRepository;
     private final TextChunker textChunker;
     private final EmbeddingService embeddingService;
+    private final Summarizer summarizer;
     private final DocumentWriter documentWriter;
 
     public DocumentResponse create(UUID clientId, CreateDocumentRequest req) {
@@ -39,7 +41,12 @@ public class DocumentService {
                         embeddingService.embed(req.title() + "\n" + c.text())))
                 .toList();
 
+        // Summary is generated after embedding (so an embedding 503 skips the LLM call)
+        // and before the write opens, keeping model calls off a held DB connection. It
+        // never fails the write: the summariser falls back to an extractive summary.
+        String summary = summarizer.summarize(req.title(), req.content());
+
         // Separate bean, not a self-invoked method, so @Transactional applies.
-        return documentWriter.save(client, req, embedded);
+        return documentWriter.save(client, req, embedded, summary);
     }
 }
