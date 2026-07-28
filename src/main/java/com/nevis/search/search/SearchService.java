@@ -10,6 +10,8 @@ import com.nevis.search.document.DocumentRepository;
 import com.nevis.search.document.VectorLiterals;
 import com.nevis.search.embedding.EmbeddingService;
 import com.nevis.search.llm.LlmProperties;
+import com.nevis.search.llm.ParsedQuery;
+import com.nevis.search.llm.QueryParser;
 import com.nevis.search.llm.SummaryText;
 import com.nevis.search.search.dto.Channel;
 import com.nevis.search.search.dto.SearchHit;
@@ -18,6 +20,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -38,6 +41,7 @@ public class SearchService {
     private final DocumentRepository documentRepository;
     private final SearchProperties props;
     private final LlmProperties llmProps;
+    private final QueryParser queryParser;
 
     @Transactional(readOnly = true)
     public List<SearchHit> search(String rawQuery, Integer requestedLimit) {
@@ -53,18 +57,52 @@ public class SearchService {
         int limit = props.clampLimit(requestedLimit);
         int depth = props.channelDepth();
 
-        String queryVector = VectorLiterals.toLiteral(embeddingService.embed(rawQuery));
+        // Optionally split a compound "{concept} of {client}" query. With no LLM this is
+        // a no-op: the whole query drives both channels, exactly as before.
+        ParsedQuery parsed = safeParsedQuery(rawQuery, queryParser.parse(rawQuery));
 
+        // The client channel searches the client text (the whole query when not compound).
+        String clientNorm = searchNormalizer.normalize(parsed.clientQuery());
         List<ClientCandidate> clients =
-                queryRepository.searchClients(qnorm, props.clientFloor(), depth);
+                queryRepository.searchClients(clientNorm, props.clientFloor(), depth);
+
+        // When a client is named, scope documents to the directly-matched client(s). If
+        // the name resolves to nobody, fall back to an unscoped search rather than
+        // returning nothing on a mis-parse.
+        Collection<UUID> scope = parsed.scopedToClient() ? directMatchIds(clients) : null;
+
+        // The document channels search the topic text (the whole query when not compound).
+        String docRaw = parsed.documentQuery();
+        String docNorm = searchNormalizer.normalize(docRaw);
+        String queryVector = VectorLiterals.toLiteral(embeddingService.embed(docRaw));
+
         List<DocCandidate> semantic =
-                queryRepository.searchSemantic(queryVector, props.semanticFloor(), depth);
+                queryRepository.searchSemantic(queryVector, props.semanticFloor(), depth, scope);
         List<DocCandidate> lexical =
-                queryRepository.searchLexical(qnorm, rawQuery, depth);
+                queryRepository.searchLexical(docNorm, docRaw, depth, scope);
 
         List<FusedDocument> fused = DocumentRankFusion.fuse(semantic, lexical, props.rrfK());
 
         return assemble(clients, fused, limit);
+    }
+
+    /** Ids of clients matched directly (name/email) — the scope for a compound query. */
+    private static Collection<UUID> directMatchIds(List<ClientCandidate> clients) {
+        List<UUID> ids = clients.stream()
+                .filter(ClientCandidate::directMatch)
+                .map(ClientCandidate::id)
+                .toList();
+        return ids.isEmpty() ? null : ids;
+    }
+
+    private ParsedQuery safeParsedQuery(String rawQuery, ParsedQuery parsed) {
+        String documentNorm = searchNormalizer.normalize(parsed.documentQuery());
+        String clientNorm = searchNormalizer.normalize(parsed.clientQuery());
+        if (documentNorm.length() < MIN_SEARCHABLE_QUERY_LENGTH
+                || clientNorm.length() < MIN_SEARCHABLE_QUERY_LENGTH) {
+            return ParsedQuery.plain(rawQuery);
+        }
+        return parsed;
     }
 
     private List<SearchHit> assemble(List<ClientCandidate> clients,

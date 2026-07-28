@@ -264,7 +264,9 @@ characters.
 
 ## 3. Search design
 
-Three queries, then two steps.
+Three queries, then two steps — optionally preceded by a query-parsing step (§8.2)
+when the LLM is enabled. Without a key this whole section runs exactly as written; the
+parser only ever *narrows* a compound query, never changes a plain one.
 
 **Query A — clients.** Substring and trigram-similarity match over a normalised
 `search_blob` (name + email + description), served by a GIN trigram index. A
@@ -402,10 +404,11 @@ implementation is built against.
 
 ## 7. Limitations
 
-- **No compound-query parsing.** For `"address proof of John Doe"`, the client query
-  surfaces John Doe and the document queries surface address-proof documents from
-  *all* clients — the name acts as a signal, not a filter. The fix (a parser
-  extracting `{client, concept}` and scoping documents by `client_id`) is future work.
+- **Compound-query parsing is opt-in.** By default `"address proof of John Doe"` treats
+  the name as a signal, not a filter: the document channels surface address-proof
+  documents from *all* clients. With `ANTHROPIC_API_KEY` set (and `parse-queries` on),
+  an LLM splits the query into `{concept, client}` and scopes documents to that client
+  — see §8.2. Off by default, so the no-egress path is unchanged.
 - **No pagination** (no cursor/offset), **no update/delete/re-index** endpoints,
   **no caching**, **no auth/tenant isolation** — all out of scope per §5.
 - **Latin-script languages only.** Search is tuned for English and accented Latin
@@ -427,24 +430,46 @@ implementation is built against.
 
 ---
 
-## 8. Document summary (the "optional quick summary")
+## 8. LLM features (optional, key-gated)
+
+Two optional features use a hosted Claude model: a **document summary** (§8.1) and
+**compound-query parsing** (§8.2). Both share one flag.
+
+**The API key is the feature flag.** `LlmConfig` inspects `nevis.llm.active()` (enabled
+*and* a non-blank key) and wires either the hosted implementation or a local fallback —
+per feature, decided once at startup, logged so you can see the live mode. The same
+build runs both ways, so **a clean clone works with no key and no egress**; add a key to
+turn the LLM on. Config lives under `nevis.llm.*` (`model`, `timeout-ms`,
+`max-summary-chars`, `parse-queries`).
+
+Set `ANTHROPIC_API_KEY` in the app's environment (empty by default). Under Docker,
+`docker-compose.yml` forwards the host's value to the app container, so the key rides an
+env var and is never baked into the image:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... docker compose up --build   # LLM features on
+docker compose up --build                                # no key → local fallbacks (default)
+```
+
+Without Docker:
+`ANTHROPIC_API_KEY=sk-ant-... ./mvnw spring-boot:run -Dspring-boot.run.profiles=demo`.
+
+> **The trade-off, and why it's opt-in.** Both features send **client financial-document
+> content or queries** to a hosted model. §4 makes local, no-egress inference a design
+> principle for this data, so the LLM is off by default; enabling it requires the DPA /
+> data-residency / retention review flagged in §9 — a deployment decision, not a code
+> change. The fallbacks keep the brief's zero-egress guarantee intact.
+
+### 8.1 Document summary (the "optional quick summary")
 
 The brief lists an **optional** *"quick summary of document content"*, served by
 `document.snippet` in the search response (§2.4). The summary is generated **once at
-creation and stored** (never recomputed during search) by a `Summarizer` with two
-implementations, chosen at startup:
+creation and stored** (never recomputed during search) by a `Summarizer`:
 
 | Mode | When | What you get |
 |---|---|---|
-| **LLM** | `ANTHROPIC_API_KEY` is set | An abstractive summary from a hosted Claude model (`claude-opus-4-8`) |
-| **Extractive** | no key (the default) | A whitespace-collapsed leading slice of the content (≤ 160 chars) — deterministic, no network |
-
-**The API key is the feature flag.** `LlmConfig` inspects `nevis.llm.active()` (enabled
-*and* a non-blank key) and wires either `AnthropicSummarizer` or `ExtractiveSummarizer`.
-The same build runs both ways, so **a clean clone works with no key and no egress**;
-add a key to turn the LLM on. The chosen mode is logged at startup.
-
-### Shape
+| **LLM** | key set | An abstractive summary from a hosted Claude model (`claude-opus-4-8`) |
+| **Extractive** | no key (default) | A whitespace-collapsed leading slice of the content (≤ 160 chars) — deterministic, no network |
 
 - **Schema** — `V3__document_summary.sql` adds a nullable `documents.summary TEXT`.
 - **Interface** — `Summarizer { String summarize(String title, String content); }`,
@@ -459,27 +484,27 @@ add a key to turn the LLM on. The chosen mode is logged at startup.
   write. Three states all behave: no key → extractive; key but API down → extractive;
   key and API up → LLM.
 
-### Enabling the LLM
+### 8.2 Compound-query parsing
 
-Set `ANTHROPIC_API_KEY` in the app's environment (empty by default). Under Docker,
-`docker-compose.yml` forwards the host's value to the app container, so the key rides
-an env var and is never baked into the image:
+Fixes the §7 limitation: for `"address proof of John Doe"`, split the query into a
+**concept** ("address proof") and a **client** ("John Doe"), then scope the document
+channels to that client instead of surfacing address-proof documents for everyone.
 
-```bash
-ANTHROPIC_API_KEY=sk-ant-... docker compose up --build   # LLM summaries on
-docker compose up --build                                # no key → extractive (default)
-```
+| Mode | When | Behaviour |
+|---|---|---|
+| **LLM** | key set **and** `parse-queries: true` | `QueryParser` splits `{concept, client}`; documents are scoped to the client |
+| **No-op** | no key, or `parse-queries: false` | every query is taken literally — identical to the pre-LLM behaviour |
 
-Without Docker:
-`ANTHROPIC_API_KEY=sk-ant-... ./mvnw spring-boot:run -Dspring-boot.run.profiles=demo`.
-
-### The trade-off this exposes (see §9)
-
-The LLM path sends **client financial-document content** to a hosted model, which is
-exactly why it is **opt-in, not default-on**: §4 makes local, no-egress inference a
-design principle for this data, and enabling the hosted summariser requires the DPA /
-data-residency / retention review flagged in §9 — a deployment decision, not a code
-change. The extractive default keeps the brief's zero-egress guarantee intact.
+- **Interface** — `QueryParser { ParsedQuery parse(String rawQuery); }`, same seam as the
+  summariser; `parse-queries` is a **separate** switch because this runs on the
+  latency-sensitive read path, so an LLM deployment can keep it off and pay the
+  per-search call only for summaries.
+- **Flow** — `SearchService` uses `clientQuery` for the client channel and
+  `documentQuery` for the two document channels; when a client is named it scopes the
+  document SQL with `AND client_id IN (:clientIds)` (the directly-matched clients).
+- **Fails safe.** A short query skips the call; a bad/blank parse, an unresolved client
+  name, or an LLM outage all fall back to an **unscoped literal search** — the parser
+  only ever narrows on a confident parse, never returns nothing on a guess.
 
 ---
 
@@ -506,8 +531,11 @@ doc in one; stable ordering; empty lists), `ResultOrdering` (tier precedence, li
 determinism), `SearchNormalizer` (shared fixtures), `TextChunker`, `DocumentService`
 (unknown client throws before any embedding call; embedding failure persists nothing;
 the generated summary reaches the writer), `ClientController` (201/400/409 via
-MockMvc), and the summary feature flag — `LlmConfig` (key present ⇒ LLM impl, absent
-or disabled ⇒ extractive) and `ExtractiveSummarizer`.
+MockMvc), and the LLM feature flags — `LlmConfig` (key/`parse-queries` decide LLM vs
+fallback for both summariser and parser), `ExtractiveSummarizer`, `AnthropicQueryParser`
+(JSON → `{concept, client}`, with fences/blank/malformed all falling back to plain),
+`NoOpQueryParser`, and `SearchService` (compound queries scope documents to the named
+client; plain queries stay unscoped; blank rejected before any model call).
 
 The Cucumber integration suite (`CucumberIntegrationTest`, with scenarios tagged
 `integration`) runs Flyway against a real `pgvector/pgvector:pg16` container — so

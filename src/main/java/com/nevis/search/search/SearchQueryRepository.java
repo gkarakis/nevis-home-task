@@ -5,6 +5,7 @@ import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 
@@ -63,13 +64,20 @@ public class SearchQueryRepository {
         return jdbc.query(sql, params, CLIENT_MAPPER);
     }
 
-    /** Query B1 — documents, semantic: a document's score is its best-scoring chunk. */
-    public List<DocCandidate> searchSemantic(String queryVector, double semanticFloor, int depth) {
+    /**
+     * Query B1 — documents, semantic: a document's score is its best-scoring chunk.
+     * When {@code clientIds} is non-empty the search is scoped to those clients — used
+     * for compound "{concept} of {client}" queries; null/empty means all clients.
+     */
+    public List<DocCandidate> searchSemantic(String queryVector, double semanticFloor,
+                                             int depth, Collection<UUID> clientIds) {
+        String scope = scoped(clientIds) ? " WHERE d.client_id IN (:clientIds) " : "";
         String sql = """
                 SELECT d.id, d.client_id, d.title,
                        MAX(1 - (c.embedding <=> CAST(:queryVector AS vector))) AS score
                 FROM documents d
                 JOIN document_chunks c ON c.document_id = d.id
+                """ + scope + """
                 GROUP BY d.id, d.client_id, d.title
                 HAVING MAX(1 - (c.embedding <=> CAST(:queryVector AS vector))) >= :semanticFloor
                 ORDER BY score DESC, d.id
@@ -79,17 +87,26 @@ public class SearchQueryRepository {
                 .addValue("queryVector", queryVector)
                 .addValue("semanticFloor", semanticFloor)
                 .addValue("depth", depth);
+        if (scoped(clientIds)) {
+            params.addValue("clientIds", clientIds);
+        }
         return jdbc.query(sql, params, DOC_MAPPER);
     }
 
-    /** Query B2 — documents, lexical: full-text plus a digit-guarded identifier path. */
-    public List<DocCandidate> searchLexical(String qnorm, String rawQuery, int depth) {
+    /**
+     * Query B2 — documents, lexical: full-text plus a digit-guarded identifier path.
+     * Scoped to {@code clientIds} when non-empty, as {@link #searchSemantic}.
+     */
+    public List<DocCandidate> searchLexical(String qnorm, String rawQuery, int depth,
+                                            Collection<UUID> clientIds) {
+        String scope = scoped(clientIds) ? " AND client_id IN (:clientIds) " : "";
         String sql = """
                 SELECT id, client_id, title,
                        ts_rank_cd(search_tsv, websearch_to_tsquery('english', :q)) AS score
                 FROM documents
-                WHERE search_tsv @@ websearch_to_tsquery('english', :q)
-                   OR (:qnorm ~ '[0-9]' AND doc_blob LIKE '%' || :qnorm || '%')
+                WHERE (search_tsv @@ websearch_to_tsquery('english', :q)
+                       OR (:qnorm ~ '[0-9]' AND doc_blob LIKE '%' || :qnorm || '%'))
+                """ + scope + """
                 ORDER BY
                     (:qnorm ~ '[0-9]' AND doc_blob LIKE '%' || :qnorm || '%') DESC,
                     score DESC,
@@ -100,6 +117,13 @@ public class SearchQueryRepository {
                 .addValue("qnorm", qnorm)
                 .addValue("q", rawQuery)
                 .addValue("depth", depth);
+        if (scoped(clientIds)) {
+            params.addValue("clientIds", clientIds);
+        }
         return jdbc.query(sql, params, DOC_MAPPER);
+    }
+
+    private static boolean scoped(Collection<UUID> clientIds) {
+        return clientIds != null && !clientIds.isEmpty();
     }
 }

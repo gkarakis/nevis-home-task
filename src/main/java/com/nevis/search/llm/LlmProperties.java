@@ -14,7 +14,8 @@ public record LlmProperties(
         String apiKey,
         String model,
         long timeoutMs,
-        int maxSummaryChars
+        int maxSummaryChars,
+        boolean parseQueries
 ) {
     public LlmProperties {
         if (model == null || model.isBlank()) model = "claude-opus-4-8";
@@ -25,5 +26,14 @@ public record LlmProperties(
     /** The LLM path is used only when explicitly enabled <em>and</em> a key is present. */
     public boolean active() {
         return enabled && apiKey != null && !apiKey.isBlank();
+    }
+
+    /**
+     * Compound-query parsing runs on the latency-sensitive read path, so it has its own
+     * switch on top of {@link #active()} — an LLM deployment can keep it off and pay the
+     * per-search model call only for summaries.
+     */
+    public boolean queryParsingActive() {
+        return active() && parseQueries;
     }
 }

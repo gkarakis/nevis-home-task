@@ -11,16 +11,19 @@ import org.springframework.context.annotation.Configuration;
 import java.time.Duration;
 
 /**
- * Chooses the {@link Summarizer} implementation at startup. The API key's presence is
- * the flag: a key wires the LLM-backed summariser (with the extractive one as its
- * fallback); no key wires the extractive summariser alone, so the app never touches
- * the network. One decision, made once, logged so reviewers can see which mode is live.
+ * Wires the LLM features at startup. The API key's presence is the flag: a key wires
+ * the hosted implementations; no key wires the local fallbacks, so the app never
+ * touches the network. One decision per feature, made once and logged so reviewers can
+ * see which mode is live. Both features share a single client, built lazily only when
+ * something is actually active.
  */
 @Configuration
 @EnableConfigurationProperties(LlmProperties.class)
 public class LlmConfig {
 
     private static final Logger log = LoggerFactory.getLogger(LlmConfig.class);
+
+    private AnthropicClient sharedClient;
 
     @Bean
     public Summarizer summarizer(LlmProperties props) {
@@ -29,11 +32,28 @@ public class LlmConfig {
             log.info("LLM summariser DISABLED (no ANTHROPIC_API_KEY) — using extractive summaries.");
             return extractive;
         }
-        AnthropicClient client = AnthropicOkHttpClient.builder()
-                .apiKey(props.apiKey())
-                .timeout(Duration.ofMillis(props.timeoutMs()))
-                .build();
         log.info("LLM summariser ENABLED (model={}).", props.model());
-        return new AnthropicSummarizer(client, props, extractive);
+        return new AnthropicSummarizer(client(props), props, extractive);
+    }
+
+    @Bean
+    public QueryParser queryParser(LlmProperties props) {
+        if (!props.queryParsingActive()) {
+            log.info("LLM query parsing DISABLED — queries are searched literally.");
+            return new NoOpQueryParser();
+        }
+        log.info("LLM query parsing ENABLED (model={}).", props.model());
+        return new AnthropicQueryParser(client(props), props);
+    }
+
+    /** One shared client for every LLM feature, built lazily only when a feature is active. */
+    private AnthropicClient client(LlmProperties props) {
+        if (sharedClient == null) {
+            sharedClient = AnthropicOkHttpClient.builder()
+                    .apiKey(props.apiKey())
+                    .timeout(Duration.ofMillis(props.timeoutMs()))
+                    .build();
+        }
+        return sharedClient;
     }
 }

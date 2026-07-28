@@ -69,3 +69,4 @@ nevis:
     model: claude-opus-4-8
     timeout-ms: 20000
     max-summary-chars: 160           # length of the extractive fallback summary
+    parse-queries: true              # split "concept of client" queries (read path; needs a key)
